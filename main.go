@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -55,8 +56,39 @@ func (_ *idGenerator) NewIDs(ctx context.Context) (trace.TraceID, trace.SpanID) 
 func addTracing(tracerName, spanName string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
-			pctx := context.WithValue(r.Context(), traceIdKey, r.Header.Get(traceIdKey))
-			ctx, span := otel.Tracer(tracerName).Start(pctx, spanName)
+			// traceHeader := r.Header.Get("traceparent")
+			// headerParts := strings.Split(traceHeader, "-")
+
+			// tid, err := trace.TraceIDFromHex(headerParts[1])
+			// if err != nil {
+			// 	panic(err)
+			// }
+
+			// sid, err := trace.SpanIDFromHex(headerParts[2])
+			// if err != nil {
+			// 	panic(err)
+			// }
+
+			// _ = trace.ContextWithSpanContext(r.Context(), trace.NewSpanContext(
+			// 	trace.SpanContextConfig{
+			// 		TraceID: tid,
+			// 		SpanID:  sid,
+			// 	},
+			// ))
+
+			tc := propagation.TraceContext{}
+			// Register the TraceContext propagator globally.
+			otel.SetTextMapPropagator(tc)
+
+			m := make(map[string]string)
+			prop := otel.GetTextMapPropagator()
+			m["traceparent"] = r.Header.Get("traceparent")
+			propCtx := prop.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+			nonRecordingSpan := trace.SpanFromContext(propCtx)
+			fmt.Println(nonRecordingSpan.SpanContext().TraceID())
+
+			ctx, span := otel.Tracer(tracerName).Start(propCtx, spanName)
 			defer span.End()
 
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -89,7 +121,6 @@ func initTracing(filename string) (*sdktrace.TracerProvider, error) {
 	return sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
-		sdktrace.WithIDGenerator(&idGenerator{}),
 	), nil
 }
 
@@ -110,6 +141,8 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
+
+	log.Println("server is running on port 8080")
 
 	if err := http.ListenAndServe(":8080", r); err != nil {
 		panic(err)
